@@ -161,3 +161,176 @@ if not ws.empty and ws["주문전환율"].max() > 0:
     fig3.update_xaxes(range=[0, ws["주문전환율"].max() * 1.2])
 fig3.update_layout(xaxis_title="주문 전환율 (%)", yaxis_title="")
 st.plotly_chart(fig3, width="stretch")
+
+# ------------------------------------------------------------
+# 4. 집단 비교 영역
+# ------------------------------------------------------------
+st.divider()
+st.subheader("집단 비교")
+
+compare_base = st.radio("비교 기준", ["플랫폼", "유입경로"], horizontal=True)
+group_col = "플랫폼" if compare_base == "플랫폼" else "유입경로"
+
+# 집단별 5단계 퍼널 데이터 집계
+group_agg = f.groupby(group_col)[["세션수", "조회세션", "장바구니세션", "결제시작세션", "주문세션"]].sum().reset_index()
+
+# 세션 수가 500개 미만인 집단 확인
+low_session_groups = group_agg[group_agg["세션수"] < 500][group_col].tolist()
+if low_session_groups:
+    st.caption(f"⚠️ 세션 수가 500개 미만인 집단({', '.join(low_session_groups)})이 있어 값이 크게 흔들릴 수 있습니다.")
+
+col_comp_left, col_comp_right = st.columns(2)
+
+# 왼쪽: 누적 전환율 퍼널 (첫 단계 대비 %)
+funnel_steps = {
+    "1.방문": "세션수",
+    "2.식당조회": "조회세션",
+    "3.장바구니": "장바구니세션",
+    "4.결제시작": "결제시작세션",
+    "5.주문완료": "주문세션"
+}
+
+cum_rows = []
+for _, row in group_agg.iterrows():
+    g_name = row[group_col]
+    base_val = row["세션수"]
+    for step_name, col_name in funnel_steps.items():
+        val = row[col_name]
+        pct = (val / base_val * 100) if base_val > 0 else 0
+        cum_rows.append({
+            group_col: g_name,
+            "단계": step_name,
+            "누적전환율": round(pct, 1),
+            "세션수": val
+        })
+
+df_cum = pd.DataFrame(cum_rows)
+fig_comp_left = px.funnel(
+    df_cum,
+    x="누적전환율",
+    y="단계",
+    color=group_col,
+    title=f"집단별 누적 전환율 퍼널 ({compare_base}별)",
+    hover_data=["세션수"]
+)
+fig_comp_left.update_layout(xaxis_title="누적 전환율 (%)", yaxis_title="")
+col_comp_left.plotly_chart(fig_comp_left, width="stretch")
+
+# 오른쪽: 단계 전환율(직전 단계 대비 %) 막대, 집단별 나란히
+step_pairs = [
+    ("1.방문 → 2.식당조회", "세션수", "조회세션"),
+    ("2.식당조회 → 3.장바구니", "조회세션", "장바구니세션"),
+    ("3.장바구니 → 4.결제시작", "장바구니세션", "결제시작세션"),
+    ("4.결제시작 → 5.주문완료", "결제시작세션", "주문세션")
+]
+
+step_rows = []
+for _, row in group_agg.iterrows():
+    g_name = row[group_col]
+    for step_name, prev_col, curr_col in step_pairs:
+        prev_val = row[prev_col]
+        curr_val = row[curr_col]
+        rate_val = (curr_val / prev_val * 100) if prev_val > 0 else 0
+        step_rows.append({
+            group_col: g_name,
+            "단계전환": step_name,
+            "단계전환율": round(rate_val, 1),
+            "기준세션": prev_val
+        })
+
+df_step = pd.DataFrame(step_rows)
+fig_comp_right = px.bar(
+    df_step,
+    x="단계전환",
+    y="단계전환율",
+    color=group_col,
+    barmode="group",
+    text_auto=".1f",
+    hover_data=["기준세션"],
+    title=f"집단별 단계 전환율 ({compare_base}별)"
+)
+fig_comp_right.update_layout(yaxis_title="단계 전환율 (%)", xaxis_title="")
+col_comp_right.plotly_chart(fig_comp_right, width="stretch")
+
+# ------------------------------------------------------------
+# 5. 드릴다운: 언제부터, 무엇 때문일까 영역
+# ------------------------------------------------------------
+st.divider()
+st.subheader("드릴다운: 언제부터, 무엇 때문일까")
+
+available_groups = sorted(f[group_col].unique())
+
+drill_col1, drill_col2 = st.columns(2)
+with drill_col1:
+    selected_group = st.selectbox("자세히 볼 집단", options=available_groups)
+with drill_col2:
+    selected_step_name = st.selectbox(
+        "단계",
+        options=[
+            "방문 → 식당조회",
+            "식당조회 → 장바구니",
+            "장바구니 → 결제시작",
+            "결제시작 → 주문"
+        ]
+    )
+
+# 단계별 매핑 정의
+step_mapping = {
+    "방문 → 식당조회": ("세션수", "조회세션"),
+    "식당조회 → 장바구니": ("조회세션", "장바구니세션"),
+    "장바구니 → 결제시작": ("장바구니세션", "결제시작세션"),
+    "결제시작 → 주문": ("결제시작세션", "주문세션")
+}
+prev_col, curr_col = step_mapping[selected_step_name]
+other_col = "유입경로" if group_col == "플랫폼" else "플랫폼"
+
+# 차트 ① 데이터 준비
+df_drill_f = f[f[group_col] == selected_group]
+wp_drill = df_drill_f.groupby(["주시작일", other_col])[[prev_col, curr_col]].sum().reset_index()
+
+# 직전 단계 세션이 0인 주는 빈 값(NaN) 처리
+wp_drill["전환율"] = wp_drill.apply(
+    lambda row: (row[curr_col] / row[prev_col] * 100) if row[prev_col] > 0 else float('nan'),
+    axis=1
+)
+
+fig_drill_1 = px.line(
+    wp_drill,
+    x="주시작일",
+    y="전환율",
+    color=other_col,
+    markers=True,
+    title=f"① {selected_group}의 주별 {selected_step_name} 전환율 — {other_col}별로 쪼개 보기"
+)
+fig_drill_1.update_layout(yaxis_title="전환율 (%)", xaxis_title="")
+st.plotly_chart(fig_drill_1, width="stretch")
+st.caption("모든 갈래가 같은 시점에 함께 움직였다면, 그 축은 원인이 아닙니다.")
+
+# 차트 ② 데이터 준비 (결제실패 건수)
+df_fail_all = f.groupby("주시작일")["결제실패"].sum().reset_index()
+df_fail_all["구분"] = "그 외"
+
+df_fail_group = f[f[group_col] == selected_group].groupby("주시작일")["결제실패"].sum().reset_index()
+df_fail_group["구분"] = selected_group
+
+# '그 외' 집단 데이터 계산 (전체 - 선택 집단)
+df_fail_other = df_fail_all.copy()
+df_fail_other["결제실패"] = df_fail_all["결제실패"] - df_fail_group["결제실패"]
+df_fail_other["구분"] = "그 외"
+
+df_fail_combined = pd.concat([df_fail_group, df_fail_other])
+
+color_map = {selected_group: "#d62728", "그 외": "#7f7f7f"}
+
+fig_drill_2 = px.bar(
+    df_fail_combined,
+    x="주시작일",
+    y="결제실패",
+    color="구분",
+    barmode="stack",
+    color_discrete_map=color_map,
+    title=f"주별 결제 실패 건수 ({selected_group} vs 그 외)"
+)
+fig_drill_2.update_layout(yaxis_title="결제 실패 건수", xaxis_title="")
+st.plotly_chart(fig_drill_2, width="stretch")
+st.caption("문제가 생긴 시점과 함께 움직였다면 원인 후보입니다. 함께 움직였다고 원인이 확정되지는 않습니다.")
