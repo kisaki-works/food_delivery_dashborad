@@ -4,6 +4,13 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+ACCENT, GRAY = "#1F3A5F", "#BDBDBD" # ← 여기부터 추가 
+px.defaults.color_discrete_map = { 
+    "Android": ACCENT, "iOS": GRAY, 
+    "push": ACCENT, "organic": "#8C8C8C", "paid_ad": GRAY, "referral": "#DADADA", } 
+
+px.defaults.color_discrete_sequence = [GRAY]
+
 st.set_page_config(page_title="사용자 행동 탐색 대시보드", layout="wide")
 st.title("사용자 행동 탐색 대시보드")
 st.caption("주별 세션 퍼널 | 플랫폼 · 유입 경로별 | 2025.07 ~ 2026.06")
@@ -55,7 +62,7 @@ WITH s AS (                                 -- 세션의 첫 이벤트로 플랫
 SELECT s.주시작일,
        s.platform     AS 플랫폼,
        s.traffic_source AS 유입경로,
-       COUNT(DISTINCT e.session_id)                                                                                                                                                           AS 세션수,
+       COUNT(DISTINCT e.session_id)                                                                                                                                                                                                                                                                                                                                           AS 세션수,
        COUNT(DISTINCT CASE WHEN e.event_name = 'view_restaurant' THEN e.session_id END)   AS 조회세션,
        COUNT(DISTINCT CASE WHEN e.event_name = 'add_to_cart'    THEN e.session_id END)   AS 장바구니세션,
        COUNT(DISTINCT CASE WHEN e.event_name = 'begin_checkout'  THEN e.session_id END)   AS 결제시작세션,
@@ -225,9 +232,9 @@ with tab_overview:
 
     t = f[["세션수", "결제시작세션", "주문세션"]].sum()
     c1, c2, c3 = st.columns(3)
-    c1.metric("세션 수", f"{t['세션수']:,}개")
-    c2.metric("주문 전환율 (방문 → 주문)", f"{rate(t['주문세션'], t['세션수']):.1f}%")
-    c3.metric("결제 전환율 (결제 시작 → 주문)", f"{rate(t['주문세션'], t['결제시작세션']):.1f}%")
+    c1.metric("세션 수", f"{t['세션수']:,}개", border=True, help="선택한 조건의 전체 세션")
+    c2.metric("누적 주문 전환", f"{rate(t['주문세션'], t['세션수']):.1f}%", border=True, help="주문 세션 ÷ 전체 세션")
+    c3.metric("결제 단계 전환", f"{rate(t['주문세션'], t['결제시작세션']):.1f}%", border=True, help="주문 세션 ÷ 결제 시작 세션")
 
     # ------------------------------------------------------------
     # 규칙 기반 설명 문장 (KPI 카드 바로 아래 st.info 추가)
@@ -315,7 +322,7 @@ with tab_overview:
     # ------------------------------------------------------------
     # 3. 차트 (라벨 한국어 및 단위 적용)
     # ------------------------------------------------------------
-    left, right = st.columns(2)
+    left, right = st.columns(2, border=True)
 
     # 3-1. 주별 결제 전환율 (플랫폼별)
     wp = f.groupby(["주시작일", "플랫폼"])[["결제시작세션", "주문세션"]].sum().reset_index()
@@ -362,6 +369,8 @@ with tab_overview:
     )
     fig3.update_xaxes(range=[0, ws["주문전환율"].max() * 1.2] if not ws.empty and ws["주문전환율"].max() > 0 else [0, 100])
     fig3.update_layout(xaxis_title="주문 전환율 (%)", yaxis_title="")
+    fig3.update_traces(marker_color=[ACCENT if s == "push" else GRAY for s in ws["유입경로"]])
+    fig3.update_xaxes(visible=False) 
     st.plotly_chart(fig3, width="stretch")
 
 with tab_explore:
@@ -574,4 +583,75 @@ with tab_explore:
 
 with tab_action:
     st.caption("이 탭에서는 지표 기반 액션 플랜과 개선 과제를 확인할 수 있습니다.")
-    st.caption("액션 카드는 다음 단계에서 추가합니다.")
+    st.caption("측정 KPI의 현재 값은 선택한 기간의 마지막 4주로 계산합니다.")
+
+    # ------------------------------------------------------------
+    # 카드 1, 2를 나란히 배치
+    # ------------------------------------------------------------
+    action_col1, action_col2 = st.columns(2)
+
+    # ------------------------------------------------------------
+    # 카드 1 공통 데이터 계산 (사이드바의 기간만 적용, 플랫폼/유입경로 필터 무시)
+    # ------------------------------------------------------------
+    f_card1 = df[
+        (df["주시작일"] >= selected_period[0]) &
+        (df["주시작일"] <= selected_period[1]) &
+        (df["플랫폼"] == "Android")
+    ]
+    weeks_card1 = sorted(f_card1["주시작일"].unique())
+
+    if len(weeks_card1) >= 4:
+        last_weeks_c1 = weeks_card1[-4:]
+        f_c1_last4 = f_card1[f_card1["주시작일"].isin(last_weeks_c1)]
+        t_c1 = f_c1_last4[["결제시작세션", "주문세션"]].sum()
+        val_c1 = rate(t_c1["주문세션"], t_c1["결제시작세션"])
+        metric_val_c1 = f"{val_c1:.1f}%"
+    else:
+        metric_val_c1 = "데이터 없음"
+
+    # ------------------------------------------------------------
+    # 카드 2 공통 데이터 계산 (사이드바의 기간만 적용, 플랫폼/유입경로 필터 무시)
+    # ------------------------------------------------------------
+    f_card2 = df[
+        (df["주시작일"] >= selected_period[0]) &
+        (df["주시작일"] <= selected_period[1]) &
+        (df["유입경로"] == "push")
+    ]
+    weeks_card2 = sorted(f_card2["주시작일"].unique())
+
+    if len(weeks_card2) >= 4:
+        last_weeks_c2 = weeks_card2[-4:]
+        f_c2_last4 = f_card2[f_card2["주시작일"].isin(last_weeks_c2)]
+        t_c2 = f_c2_last4[["세션수", "조회세션"]].sum()
+        val_c2 = rate(t_c2["조회세션"], t_c2["세션수"])
+        metric_val_c2 = f"{val_c2:.1f}%"
+    else:
+        metric_val_c2 = "데이터 없음"
+
+    # ------------------------------------------------------------
+    # 카드 1 렌더링
+    # ------------------------------------------------------------
+    with action_col1:
+        with st.container(border=True):
+            st.markdown("- **문제**: 결제 시작에서 주문 전환율이 2026-04-13 주부터 하락해 5월 3주차 최저 41.4%, 6월 1주차부터 회복")
+            st.markdown("- **근거**: 같은 기간 iOS는 평소 범위 안 · Android 결제 실패가 주 4건 이하 → 최대 153건")
+            st.markdown("- **성격**: 특정 시점에 발생한 문제")
+            st.markdown("- **액션**: 추가 분석: 앱 버전별로 결제 실패 확인 → 모니터링: 결제 전환율이 평소 범위를 벗어나는지 매주 점검")
+            st.markdown("- **우선순위**: 영향 큼 · 실행 쉬움 → 바로 실행")
+            st.markdown("- **측정 KPI**: Android 결제 전환율 (최근 4주)")
+            st.metric("Android 결제 전환율 (최근 4주)", metric_val_c1)
+            st.caption("대시보드에서: 개요 탭 규칙 문장(플랫폼 Android) · 탐색 탭 드릴다운")
+
+    # ------------------------------------------------------------
+    # 카드 2 렌더링
+    # ------------------------------------------------------------
+    with action_col2:
+        with st.container(border=True):
+            st.markdown("- **문제**: 방문 → 식당 조회 전환율 28.4% (다른 경로 57-69%), 주문 전환율 3.2%")
+            st.markdown("- **근거**: 2026년 2월부터 월별 세션의 30-36%가 push · 기간 내내 25-35%")
+            st.markdown("- **성격**: 전체 구간에 세그먼트별 반응 차이")
+            st.markdown("- **액션**: 실험: 일부 사용자에게만 푸시 대상과 문구를 바꿔 방문 → 식당 조회 전환율 비교")
+            st.markdown("- **우선순위**: 효과 불확실 · 실행 쉬움 → 실험부터")
+            st.markdown("- **측정 KPI**: push 방문 → 식당 조회 전환율(최근 4주)")
+            st.metric("push 방문 → 식당 조회 전환율(최근 4주)", metric_val_c2)
+            st.caption("대시보드에서: 탐색 탭 비교 기준 '유입경로' · 드릴다운 push")
